@@ -1,0 +1,70 @@
+<html>
+<head>
+    <script>
+        function main() {
+          function getRandomInt(min, max) {
+            min = Math.ceil(min);
+            max = Math.floor(max);
+            return Math.floor(Math.random() * (max - min + 1)) + min;
+          }
+
+          const qSize = 10;
+          let qCnt = 0;
+          let allResult = 0;
+          let allTime = 0;
+
+          for (i = 1; i <= qSize; i++) {
+            let n1 = getRandomInt(2, 10);
+            let n2 = getRandomInt(2, 10);
+
+            const repl = getRandomInt(0, 1);
+            if (repl) {
+              const oldN1 = n1;
+              n1 = n2;
+              n2 = oldN1;
+            }
+
+            const expected = n1 * n2;
+            const query = `${n1} * ${n2} = `;
+            const startTime = new Date();
+            const resultStr = prompt(`${i})  ${query}`);
+            if (resultStr == null) {
+              break;
+            }
+
+            const endTime = new Date();
+            const result = Number(resultStr);
+            const ok = result === expected;
+
+            qCnt++;
+            allResult += (ok ? 1 : 0);
+            allTime += Math.round((endTime - startTime) / 1000);
+
+            const response = ok
+              ? `${i})  super! ${query}${result}`
+              : `${i})  niestety, ${query}${expected}, a nie ${result}`;
+
+            console.log(response);
+            alert(response);
+          }
+
+//const allResp = `Twój wynik: ${allResult} / ${qCnt}. Czas: ${allTime} s, średnio ${allTime / qCnt} s.`;
+          const allResp = `Twój wynik: ${allResult} / ${qCnt}.`;
+          console.log(allResp);
+
+          try {
+            const cache = JSON.parse(localStorage.getItem('mnozenie') || '{}');
+            cache.wyniki = cache.wyniki || [];
+            cache.wyniki.push({date: new Date().toISOString(), wynik: allResp });
+            localStorage.setItem('mnozenie', JSON.stringify(cache));
+          } catch (e) {}
+
+          alert(allResp);
+
+        }
+    </script>
+</head>
+<body>
+    <script>main()</script>
+</body>
+</html>
