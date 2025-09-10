@@ -1,0 +1,394 @@
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Eval Sandbox</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/lodash.js/4.17.21/lodash.min.js"
+            onload="console.log('Loaded script:', this.src)"></script>
+    <style>
+        html, body {
+            width: 100%;
+            height: 100%;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            display: flex;
+            flex-direction: column;
+            background-color: lightgray;
+        }
+
+        body > * {
+            flex: none;
+        }
+
+        .toolbar {
+            display: flex;
+            flex-wrap: wrap;
+        }
+        .toolbar > * {
+            flex: none;
+        }
+        .toolbar select {
+            min-width: 10em;
+        }
+        .toolbar > * + * {
+            margin-left: 1em;
+        }
+
+        #container {
+            flex: auto;
+            overflow: hidden;
+            margin: 3px;
+        }
+    </style>
+
+    <script>
+
+      async function loadMonaco() {
+        if (window._monacoLoaded) {
+          await window._monacoLoaded;
+        } else {
+          let promiseRC;
+          window._monacoLoaded = new Promise((resolve, reject) => promiseRC = { resolve, reject });
+
+          try {
+            // not switching to later versions due to this bug, which steals the F12 key binding: https://github.com/microsoft/monaco-editor/issues/4252
+            const monacoVersion = '0.39.0';
+            const monacoUrl = `https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/${monacoVersion}/min/vs`;
+
+            await new Promise(resolve => {
+              const loaderScript = document.createElement('script');
+              loaderScript.src = `${monacoUrl}/loader.min.js`;
+              loaderScript.onload = resolve;
+              document.head.appendChild(loaderScript);
+            });
+
+            // require is provided by loader.min.js
+            require.config({ paths: { 'vs': monacoUrl } });
+            await new Promise(resolve => require(['vs/editor/editor.main'], resolve));
+
+            promiseRC.resolve();
+          } catch (e) {
+            promiseRC.reject(e);
+            throw e;
+          }
+        }
+      }
+    </script>
+
+    <script>
+      const storageKey = 'eval-sandbox';
+
+      class App {
+        pendingPromise;
+        /** @type {StorageUtils} */
+        rootStorage;
+        /** @type {StorageUtils} */
+        storage;
+        editor;
+        model;
+        autoExecute = false;
+        /** @type {'info'|'debug'} */
+        logLevel = 'debug';
+
+        constructor() {
+          this.rootStorage = new StorageUtils(storageKey);
+          this.pendingPromise = null;
+        }
+        
+        log(...args) {
+            console[this.logLevel](...args);
+        }
+
+        async init() {
+          this.initSandboxes();
+        }
+
+        initSandboxes() {
+          this.renameSandboxDebounced = _.debounce(this.renameSandbox, 500);
+
+          let sandboxesDict = this.rootStorage.read()?.sandboxes || {};
+          if (!Object.keys(sandboxesDict || {}).length) {
+            this.addSandbox(sandboxesDict);
+          } else {
+            const sandboxesList = this.renderSandboxesSelect(sandboxesDict);
+            this.setSelectedSandbox(sandboxesList[0].id);
+          }
+        }
+
+        renderSandboxesSelect(sandboxesDict = null) {
+          /** @type {HTMLSelectElement} */
+          const select = document.getElementById('sandboxesSelect');
+          const selectValue = select.value;
+
+          sandboxesDict ??= this.rootStorage.read()?.sandboxes || {};
+          const sandboxesList = _.orderBy(Object.values(sandboxesDict), 'editDate', 'desc');
+          const options = sandboxesList?.length
+            ? sandboxesList.map(i => `<option value="${i.id}" ${selectValue && i.id === selectValue ? 'selected' : ''}>${i.name}</option>`).join('\n')
+            : '';
+          document.getElementById('sandboxesSelect').innerHTML = options;
+
+          return sandboxesList;
+        }
+
+        setSelectedSandbox(id) {
+          this.storage = new StorageUtils(storageKey, ['sandboxes', id]);
+          const sandbox = this.storage.read();
+          if (!sandbox) {
+            alert('Missing sandbox, refresh browser.');
+            // document.location = document.location.href;
+            return;
+          }
+          document.getElementById('sandboxNameInput').value = sandbox.name;
+
+          this.initSandbox();
+        }
+
+        async initSandbox() {
+          await this.initScripts();
+          await loadMonaco();
+          this.initEditor();
+        }
+
+        renameSandbox(name) {
+          this.storage?.store({ name });
+          this.renderSandboxesSelect();
+        }
+
+        addSandbox(sandboxesDict = null) {
+          sandboxesDict ??= this.rootStorage.read()?.sandboxes;
+          const id = new Date().toISOString();
+          sandboxesDict[id] = { id, name: 'new sandbox', editDate: new Date().toISOString(),
+            modelValue: 'console.log("Hello world! Open console to see the output.");',
+          };
+          this.rootStorage.store({ sandboxes: sandboxesDict });
+
+          this.renderSandboxesSelect(sandboxesDict);
+          this.setSelectedSandbox(id);
+        }
+
+        removeSandbox() {
+          const sandbox = this.storage.read();
+          if (sandbox) {
+            if (confirm(`Remove sandbox "${sandbox.name}"?`)) {
+              const sandboxesDict = this.rootStorage.read().sandboxes;
+              sandboxesDict[sandbox.id] = undefined;
+              this.rootStorage.store({ sandboxes: sandboxesDict });
+
+              const sandboxesList = this.renderSandboxesSelect();
+              this.setSelectedSandbox(sandboxesList[0].id);
+            }
+          }
+        }
+
+        async initScripts() {
+          try {
+            const scripts = this.storage.read()?.scripts || [];
+            document.getElementById('scriptsTxt').value = scripts.join('\n');
+            if (scripts.length) {
+              await this.setScripts(scripts);
+            }
+          } catch (e) {
+            console.warn(e);
+          }
+        }
+
+        async setScripts(scripts) {
+          this.storage.store({ scripts });
+
+          await Promise.all(scripts.map(async script => await this.loadScript(script)));
+        }
+        
+        
+      async loadScript(url) {
+        if (![...document.scripts || []].some(script => script.src === url)) {
+          // if (window.define?.amd) {
+          //     // needed for UMD scripts
+          //     define.amd = false;
+          // }
+
+          await new Promise((resolve, reject) => {
+            try {
+              const script = document.createElement('script');
+              script.src = url;
+              script.type = 'text/javascript';
+              script.onload = () => {
+                this.log('Loaded script:', url);
+                resolve();
+              }
+              document.head.appendChild(script);
+            } catch (e) {
+              reject(e);
+            }
+          });
+        }
+      }
+
+        initEditor() {
+          const modelValue = this.storage.read()?.modelValue || '';
+
+          if (!this.editor) {
+            this.editor = monaco.editor.create(document.getElementById('container'), {
+              theme: window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'vs-dark' : 'vs-light',
+              language: 'javascript',
+              fontSize: 12,
+			  tabSize: 2,
+			  indentSize: 2,
+			  insertSpaces: true,
+              value: modelValue || '',
+            });
+            this.editor.addAction({
+              id: 'my-execute',
+              label: 'Execute',
+              contextMenuGroupId: 'navigation',
+              contextMenuOrder: 1.5,
+              keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter],
+              run: () => this.execute(),
+            });
+
+            this.model = this.editor.getModel();
+            this.model.onDidChangeContent(_.debounce((...args) => {
+              this.storage.store({ modelValue: this.model.getValue(), editDate: new Date().toISOString() },
+                { updatePredicate: (oldSandbox, passedData) => oldSandbox?.modelValue !== passedData.modelValue });
+
+              if (this.autoExecute) {
+                this.execute();
+              }
+            }, 500));
+
+            window.addEventListener('resize', _.debounce(() => this.editor.layout(), 500));
+
+            if (this.autoExecute) {
+              this.execute();
+            }
+          } else {
+            this.model.setValue(modelValue);
+          }
+        }
+
+        setAutoExecute(autoExecute) {
+          this.autoExecute = autoExecute;
+          if (autoExecute) {
+            this.execute();
+          }
+        }
+
+        execute(options) {
+          if (!options?.keepConsole) {
+            console.clear();
+          }
+          const modelValue = this.model.getValue();
+
+          this.log('---------- start -------------');
+
+          const result = eval(modelValue);
+
+          if (typeof result?.then === 'function') {
+            this.log('~~~~~~~~~~ awaiting ~~~~~~~~~~');
+
+            this.pendingPromise = result;
+            result.then(r => {
+              if (this.pendingPromise === result) {
+                this.log('========== finished ==========');
+                console.log(r);
+              }
+            })
+          } else {
+            this.log('========== finished ==========');
+            console.log(result);
+          }
+        }
+      }
+
+      class StorageUtils {
+        key;
+        subPath;
+        storage;
+
+        constructor(key, subPath) {
+          this.key = key;
+          this.subPath = subPath;
+          this.storage = localStorage;
+        }
+
+        read(fromRoot = false) {
+          if (!this.key) {
+            return {};
+          }
+          try {
+            const rootData = JSON.parse(this.storage.getItem(this.key));
+            return !fromRoot && this.subPath ? _.get(rootData, this.subPath) : rootData;
+          } catch (e) {
+            return undefined;
+          }
+        }
+
+        /**
+         * @template T
+         * @param {T} objToMerge
+         * @param {{ updatePredicate?: (data: any, objToMerge: T, newData: any) => boolean }} [options]
+         */
+        store(objToMerge, options) {
+          let rootData = this.read(true) || {};
+          const data = this.subPath ? _.get(rootData, this.subPath) : rootData;
+          const newData = {
+            ...data,
+            ...objToMerge,
+          }
+
+          if (options?.updatePredicate && !options.updatePredicate(data, objToMerge, newData)) {
+            return undefined;
+          }
+
+          rootData = this.subPath ? _.set(rootData, this.subPath, newData) : newData;
+
+          try {
+            this.storage.setItem(this.key, JSON.stringify(rootData));
+            return newData;
+          } catch (e) {
+            return undefined;
+          }
+        }
+      }
+
+      function onLoad() {
+        window.app = new App();
+        window.app.init();
+      }
+    </script>
+</head>
+
+<body onload="onLoad()">
+<div class="toolbar">
+    <span>
+        <input id="autoExecuteChb" type="checkbox" onchange="app.setAutoExecute(this.checked)"/>
+        <label for="autoExecuteChb">Auto Execute</label>
+    </span>
+
+    <button id="executeBtn" type="button" onclick="app.execute()">Execute</button>
+
+    <div style="display: flex; flex: auto;">
+        <label for="scriptsTxt">scripts:</label>
+        <textarea id="scriptsTxt" style="flex: auto; resize: both; min-width: 10em; max-width: 50em;" rows="1"></textarea>
+        <button type="button"
+                onclick="app.setScripts(document.getElementById('scriptsTxt').value?.split('\n').map(i => i.trim()).filter(Boolean))">Load</button>
+        <button type="button" onclick="document.getElementById('scriptsTxt').value = ''; app.setScripts([]);">Clear</button>
+    </div>
+
+    <div></div>
+
+    <div style="display: flex;">
+        <button type="button" onclick="app.addSandbox()">Add sandbox</button>
+        <div style="display: flex;">
+            <div style="position: relative;">
+                <select id="sandboxesSelect" onchange="app.setSelectedSandbox(this.value)"></select>
+                <input id="sandboxNameInput" style="position: absolute; left: 0; top: 0; bottom: 0; right: 20px;" oninput="app.renameSandboxDebounced(this.value)" />
+            </div>
+            <button type="button" onclick="app.removeSandbox()">X</button>
+        </div>
+    </div>
+</div>
+<div id="container"></div>
+</body>
+</html>
