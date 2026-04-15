@@ -24,7 +24,7 @@
 
     <script>
         const csvFilePath = './lego.csv'; 
-        const columns = "Image, SetID, SetName, Theme, Subtheme, Pieces, Minifigs, YearFrom".split(',').map(i => i.trim()).filter(Boolean);
+        const columns = "Image, Number, SetName, Theme, Subtheme, Pieces, Minifigs, YearFrom".split(',').map(i => i.trim()).filter(Boolean);
 
         async function loadCSV() {
             try {
@@ -38,7 +38,7 @@
                 });
                 console.log(result);
 
-                const items = result.data.filter(i => i.SetID);
+                const items = result.data.filter(i => i.Number);
                 // items.sort((a, b) => (b.Pieces || 0) - (a.Pieces || 0));
                 
                 const table = document.getElementById('csv-table');
