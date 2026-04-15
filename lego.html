@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Lego Inventory Table</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 40px; background-color: #f8f9fa; }
+        h2 { color: #333; border-left: 5px solid #ffcf00; padding-left: 15px; }
+        table { border-collapse: collapse; width: 100%; background: white; box-shadow: 0 2px 15px rgba(0,0,0,0.1); }
+        th, td { padding: 12px 15px; text-align: left; border-bottom: 1px solid #eee; }
+        th { background-color: #222; color: #ffcf00; font-size: 0.9rem; }
+        tr:nth-child(even) { background-color: #fafafa; }
+        tr:hover { background-color: #fff9db; }
+    </style>
+</head>
+<body>
+
+    <h2>Lego Data Set</h2>
+    <table id="csv-table">
+        </table>
+
+    <script>
+        const csvFilePath = './lego.csv'; 
+        const columns = "Image, SetID, SetName, Theme, Subtheme, Pieces, Minifigs, YearFrom".split(',').map(i => i.trim()).filter(Boolean);
+
+        async function loadCSV() {
+            try {
+                const response = await fetch(csvFilePath);
+                if (!response.ok) throw new Error("Could not find the file.");
+                
+                const csvData = await response.text();
+                const result = Papa.parse(csvData, {
+                    header: true,
+                    dynamicTyping: true,
+                });
+                console.log(result);
+
+                const items = result.data.filter(i => i.SetID);
+                // items.sort((a, b) => (b.Pieces || 0) - (a.Pieces || 0));
+                
+                const table = document.getElementById('csv-table');
+
+                const tr = document.createElement('tr');
+                columns.forEach(column => {
+                    const cell = document.createElement('th');
+                    cell.textContent = column;
+                    tr.appendChild(cell);
+                });
+                table.appendChild(tr);
+
+                items.forEach((item, index) => {
+                    const tr = document.createElement('tr');
+                    
+                    columns.forEach(column => {
+                        const cell = document.createElement('td');
+
+                        if (column === 'Image' && item.ImageFilename){
+                            cell.innerHTML = `<img src="https://images.brickset.com/sets/small/${item.ImageFilename}.jpg" />`;
+                        } else {
+                            cell.textContent = item[column];
+                        }
+                        tr.appendChild(cell);
+                    });
+
+                    table.appendChild(tr);
+                });
+            } catch (error) {
+                console.error(error);
+                document.body.innerHTML += `<p style="color:red; font-weight:bold;">Error: Make sure you are viewing this via a local server and that './lego.csv' exists.</p>`;
+            }
+        }
+
+        loadCSV();
+    </script>
+</body>
+</html>
